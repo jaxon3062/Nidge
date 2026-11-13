@@ -72,35 +72,46 @@ for `ptpip:`, where the vendor extension comes from DeviceInfo. To confirm.
 
 ## 2. Network (observed)
 
-- Camera Wi-Fi mode used: started by hand from the camera menu. **Menu path,
-  SSID pattern and security type: not recorded yet (owner to supply).** macOS
-  redacts the SSID from command-line tools.
+- Camera Wi-Fi mode used: started by hand on the camera from Settings >
+  Network menu > Connect to smart device > Wi-Fi connection (AP), as the owner
+  reported it. The network is password-protected; the password shown by the
+  camera is typed on the Mac. SSID pattern and security type not recorded
+  (macOS redacts the SSID from command-line tools).
 - Camera is the access point and DHCP server at `192.168.1.1`; the Mac got
   `192.168.1.2`, mask `255.255.255.0`. The camera answers ping. Its MAC
   address starts `3c:be:e1`.
 - TCP port 15740 open. Nothing else was probed.
 - `192.168.1.1` is also a common home-router address (it is the owner's), so
   the IP alone does not prove the phone is on the camera's network.
-- Connecting was flaky right after joining. Two attempts failed before the one
-  that worked, about 2.5 and 5 minutes earlier: one with "Network is
-  unreachable" (no TCP packet left the Mac), one where the SYN got no reply
-  within gphoto2's 2 s timeout although a port check seconds earlier had
-  succeeded. Cause unknown. The client needs connect retries.
+- **The camera's Wi-Fi goes away without warning.** In two of four later runs
+  the access point stopped answering about 2 s after a CloseSession (once
+  after a listing session, once after a download session): the next SYN got
+  no reply and the Mac fell back to the home network within about 10 s. The
+  camera sent no event first and closed both TCP connections normally. The
+  owner's reading is that the camera shuts Wi-Fi down early. Other runs did
+  five and seven sessions in a row without a drop, so the trigger is unknown.
+  Two failed attempts before the very first run are probably the same thing.
+- Consequences for the client: connect with retries, treat "port 15740
+  refused" as "wrong network", and prefer one long session over many short
+  ones. Whether a session that stays open keeps the Wi-Fi up is untested.
 
 ## 3. Handshake (observed)
 
 - A third-party Init Command Request gets an **Init Command Ack** within about
-  5 ms. No Init Fail was seen in five consecutive sessions.
+  5 ms. No Init Fail was seen in any session, over five runs.
 - No extra authentication on the wire: Init Command Request/Ack on the first
   TCP connection, Init Event Request/Ack on a second one, then OpenSession.
-- Pairing prompt on the camera screen: **not recorded yet (owner to supply).**
+- The camera showed no pairing or confirmation prompt (owner's observation).
+  Joining the Wi-Fi with its password was the only gate.
 - GUID / friendly name: gphoto2 sent its own stored 16-byte GUID and the Mac's
   hostname, protocol version 1.0 (`0x00010000`). Whether the camera would
   accept a different or new GUID was not tested.
 - The Ack carries a 16-byte camera GUID, the name `Z5_2_<7 digits>` and
   version 1.0. The connection number goes up by one per session (1 to 5).
-- CloseSession takes 500 to 600 ms to answer. A new session 2 s later worked
-  every time.
+- CloseSession usually takes 500 to 600 ms to answer, sometimes 30 to 200 ms.
+  A new session 2 s later usually worked; see the Wi-Fi drops in section 2.
+  Both drops followed a fast CloseSession (27 and 48 ms), but fast ones also
+  occurred without a drop.
 - No Ping/Pong was seen; the longest session was 25 s. Idle timeout unknown.
 - The event connection delivered two DevicePropChanged (0x4006) events for
   property 0x5007 during the download session, with transaction ID
@@ -115,6 +126,8 @@ for `ptpip:`, where the vendor extension comes from DeviceInfo. To confirm.
 | List | `--list-files` | OK, 1211 objects, 25.6 s |
 | Thumbnail | `--get-thumbnail 1210` | OK, 9558-byte 160x120 JPEG |
 | JPEG | `--get-file 1210` | OK, 9,881,243 bytes, valid JPEG with EXIF |
+| HEIF thumbnail | `--get-thumbnail 1212` | OK, 7986-byte 160x120 JPEG |
+| HEIF | `--get-file 1212` | OK, 2,762,328 bytes, valid HEIF (HEVC Main 10) |
 
 Operations seen on the wire, all answered 0x2001 OK unless noted:
 
@@ -235,26 +248,28 @@ Supported events (26): 0x4001 to 0x400A, 0x400C, 0x400D, 0xC101, 0xC102,
 
 ### Object format codes
 
-Read from GetObjectInfo for all 1211 objects on the card:
+Read from GetObjectInfo for every object on the card (1213 after a HEIF+NEF
+shot was added for the second set of runs):
 
 | Kind | ObjectFormat | ThumbFormat | Count |
 |---|---|---|---|
 | JPEG (`.JPG`) | 0x3801 | 0x3808, 160x120 | 727 |
-| NEF (`.NEF`) | 0x3000 (Undefined) | 0x3808, 160x120 | 474 |
+| NEF (`.NEF`) | 0x3000 (Undefined) | 0x3808, 160x120 | 475 |
 | Video (`.MOV`) | 0x300D | 0x3808, 160x120 | 10 |
 | Folder | 0x3001 | none | 2 |
-| HEIF | **not observed: no HEIF file was on the card** | | |
+| HEIF (`.HIF`) | **0xB200** | 0x3808, 160x120 | 1 |
 
-- NEF has no code of its own, so the app must tell NEF apart by file extension
-  (or by "not 0x3801 and not the HEIF code").
+- The download filter is "ObjectFormat is 0x3801 or 0xB200". NEF has no code
+  of its own (0x3000 is "Undefined"), so do not filter by excluding a NEF
+  code. HEIF was seen on one file only.
 - DeviceInfo's image formats are 0x3801, 0x3000, 0x3001, 0x3008, 0x380D,
   0x3002, 0x300D, 0xB200, 0xB201, 0xB982. 0xB200 and 0xB201 are not in
-  `ptp.h`; one of them may be HEIF, but that is a guess until a HEIF file is
-  listed.
+  `ptp.h`. 0xB201 was not seen on any object.
 - Layout: `DCIM` (handle 0x11004000) > `100NZ5_2` (0x11190000) > files.
-  For a JPEG+NEF pair the handles differed only in the top bits: 0x291909B7
-  for `DSC_2487.JPG`, 0x091909B7 for `DSC_2487.NEF`. Seen on this card
-  only; do not rely on it.
+  Handles for the same shot share the low 28 bits and differ in the top
+  nibble: 0x2 JPEG, 0x0 NEF, 0x6 HEIF, 0x5 MOV (for example 0x691909B8
+  `DSC_2488.HIF` and 0x091909B8 `DSC_2488.NEF`). Seen on this card only; do
+  not rely on it.
 - Dates are local camera time, `YYYYMMDDThhmmss`, no time zone.
 
 ## 5. Performance (observed, one run)
@@ -266,8 +281,9 @@ Read from GetObjectInfo for all 1211 objects on the card:
   call, occasional calls of 200 to 500 ms. About 10 to 20 ms per object.
 - Thumbnail: 9558 bytes in 22 ms.
 - JPEG download: 9,881,243 bytes in about 5.9 s with GetPartialObject in
-  1 MiB chunks, **1.4 to 1.8 MB/s** per chunk (about 1.7 MB/s overall). Wi-Fi
-  band and distance were not recorded.
+  1 MiB chunks, **1.4 to 1.8 MB/s** per chunk (about 1.7 MB/s overall), the
+  same in two later runs. Wi-Fi band and distance were not recorded.
+- HEIF download: 2,762,328 bytes in 1.7 s, 1.6 to 1.8 MB/s per chunk.
 - The probe script's "0.47 MB/s" is wrong as a throughput figure: it includes
   the 14 s gphoto2 spent re-listing the card before the download.
 
@@ -276,13 +292,13 @@ Read from GetObjectInfo for all 1211 objects on the card:
 A file downloaded from the Z5II by a non-Nikon client: **passed, 2026-11-13.**
 gphoto2 downloaded `DSC_2487.JPG` (9,881,243 bytes, equal to the size the
 camera reported) over PTP/IP. It was not compared byte for byte with the card
-copy.
+copy. A later run also downloaded `DSC_2488.HIF` (2,762,328 bytes, equal to
+the reported size), and the JPEG's SHA-256 was identical across three runs.
 
 Open after M0:
 
-- HEIF format code (needs a HEIF file on the card).
-- Camera menu path, SSID/security, and whether the camera showed a prompt.
+- Why the camera's Wi-Fi drops, and whether one long-lived session avoids it.
+- SSID pattern and security type.
 - Whether a fresh GUID is accepted, and the idle timeout.
-- Why the first two connection attempts failed.
 - The faster Nikon operations (GetPartialObjectEx, GetObjectsMetaData,
   GetLargeThumb) are advertised but untested.
