@@ -75,8 +75,8 @@ for `ptpip:`, where the vendor extension comes from DeviceInfo. To confirm.
 - Camera Wi-Fi mode used: started by hand on the camera from Settings >
   Network menu > Connect to smart device > Wi-Fi connection (AP), as the owner
   reported it. The network is password-protected; the password shown by the
-  camera is typed on the Mac. SSID pattern and security type not recorded
-  (macOS redacts the SSID from command-line tools).
+  camera is typed on the Mac. SSID is `NIKON_Z5_2_<5 digits>`; security is
+  WPA2-PSK/WPA3-SAE (both read off the camera by the owner).
 - Camera is the access point and DHCP server at `192.168.1.1`; the Mac got
   `192.168.1.2`, mask `255.255.255.0`. The camera answers ping. Its MAC
   address starts `3c:be:e1`.
@@ -298,7 +298,6 @@ the reported size), and the JPEG's SHA-256 was identical across three runs.
 Open after M0:
 
 - Why the camera's Wi-Fi drops, and whether one long-lived session avoids it.
-- SSID pattern and security type.
 - Whether a fresh GUID is accepted, and the idle timeout.
 - The faster Nikon operations (GetPartialObjectEx, GetObjectsMetaData,
   GetLargeThumb) are advertised but untested.
