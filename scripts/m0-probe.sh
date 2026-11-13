@@ -78,8 +78,9 @@ section "Packet capture"
 PCAP="$OUT/capture.pcap"
 echo "Enter your Mac password so tcpdump can record the packets:"
 if sudo -v; then
+  # sleep 2 in the trap: tcpdump drops packets still buffered when killed at once
   sudo tcpdump -i "$WIFI_IF" -s 0 -U -w "$PCAP" host "$IP" >"$OUT/tcpdump.log" 2>&1 &
-  trap 'sudo -n pkill -f "$PCAP" 2>/dev/null || sudo pkill -f "$PCAP"; sleep 1; say "capture: $(wc -c <"$PCAP" 2>/dev/null || echo 0) bytes"' EXIT
+  trap 'sleep 2; sudo -n pkill -f "$PCAP" 2>/dev/null || sudo pkill -f "$PCAP"; sleep 1; say "capture: $(wc -c <"$PCAP" 2>/dev/null || echo 0) bytes"' EXIT
   sleep 2
   say "capture: started ($PCAP)"
 else

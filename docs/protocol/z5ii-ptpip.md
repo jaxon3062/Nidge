@@ -1,8 +1,9 @@
 # Z5II PTP/IP findings
 
-Status: **M0 not run yet. Nothing in this file has been tested on the camera.**
-Section 1 is reference data checked against libgphoto2 source only. Sections 2
-onward are to be filled in from the real Z5II.
+Status: **M0 run on the real Z5II on 2026-11-13 (firmware 1.20). Gate passed.**
+Section 1 is reference data from libgphoto2 source. Sections 2 to 6 are what
+was observed with gphoto2 2.5.32 / libgphoto2 2.5.34 on macOS 26.6, read from a
+tcpdump capture of the session. Anything not observed is marked as such.
 
 ## 1. Reference numbers (checked against libgphoto2 `camlibs/ptp2/ptp.h`, master, 2026-11-13)
 
@@ -69,36 +70,219 @@ The Z5II is not in libgphoto2's USB model table (`library.c` lists Z5 and
 Z50II but not Z5II). That table is keyed on USB IDs, so it should not matter
 for `ptpip:`, where the vendor extension comes from DeviceInfo. To confirm.
 
-## 2. Network (to test)
+## 2. Network (observed)
 
-- Camera Wi-Fi mode used:
-- SSID pattern / security:
-- Camera IP, Mac IP, DHCP range:
-- Port 15740 open:
+- Camera Wi-Fi mode used: started by hand from the camera menu. **Menu path,
+  SSID pattern and security type: not recorded yet (owner to supply).** macOS
+  redacts the SSID from command-line tools.
+- Camera is the access point and DHCP server at `192.168.1.1`; the Mac got
+  `192.168.1.2`, mask `255.255.255.0`. The camera answers ping. Its MAC
+  address starts `3c:be:e1`.
+- TCP port 15740 open. Nothing else was probed.
+- `192.168.1.1` is also a common home-router address (it is the owner's), so
+  the IP alone does not prove the phone is on the camera's network.
+- Connecting was flaky right after joining. Two attempts failed before the one
+  that worked, about 2.5 and 5 minutes earlier: one with "Network is
+  unreachable" (no TCP packet left the Mac), one where the SYN got no reply
+  within gphoto2's 2 s timeout although a port check seconds earlier had
+  succeeded. Cause unknown. The client needs connect retries.
 
-## 3. Handshake (to test)
+## 3. Handshake (observed)
 
-- Does a third-party Init Command Request get an Ack, or Init Fail?
-- Does the camera show a pairing/confirmation prompt?
-- GUID / friendly-name requirements:
+- A third-party Init Command Request gets an **Init Command Ack** within about
+  5 ms. No Init Fail was seen in five consecutive sessions.
+- No extra authentication on the wire: Init Command Request/Ack on the first
+  TCP connection, Init Event Request/Ack on a second one, then OpenSession.
+- Pairing prompt on the camera screen: **not recorded yet (owner to supply).**
+- GUID / friendly name: gphoto2 sent its own stored 16-byte GUID and the Mac's
+  hostname, protocol version 1.0 (`0x00010000`). Whether the camera would
+  accept a different or new GUID was not tested.
+- The Ack carries a 16-byte camera GUID, the name `Z5_2_<7 digits>` and
+  version 1.0. The connection number goes up by one per session (1 to 5).
+- CloseSession takes 500 to 600 ms to answer. A new session 2 s later worked
+  every time.
+- No Ping/Pong was seen; the longest session was 25 s. Idle timeout unknown.
+- The event connection delivered two DevicePropChanged (0x4006) events for
+  property 0x5007 during the download session, with transaction ID
+  0xFFFFFFFF.
 
-## 4. Operations that worked (to test)
+## 4. Operations that worked (observed)
 
 | Step | Command | Result |
 |---|---|---|
-| Summary | `gphoto2 --port ptpip:192.168.1.1 --summary` | |
-| List | `gphoto2 --port ptpip:192.168.1.1 --list-files` | |
-| Thumbnail | `--get-thumbnail N` | |
-| JPEG | `--get-file N` | |
+| Summary | `gphoto2 --port ptpip:192.168.1.1 --summary` | OK, 6.0 s (330 GetDevicePropDesc calls) |
+| Storage | `--storage-info` | OK, 0.8 s |
+| List | `--list-files` | OK, 1211 objects, 25.6 s |
+| Thumbnail | `--get-thumbnail 1210` | OK, 9558-byte 160x120 JPEG |
+| JPEG | `--get-file 1210` | OK, 9,881,243 bytes, valid JPEG with EXIF |
 
-Supported operation list from DeviceInfo:
+Operations seen on the wire, all answered 0x2001 OK unless noted:
 
-## 5. Performance (to test)
+| Operation | Code | Notes |
+|---|---|---|
+| OpenSession | 0x1002 | session ID 1 |
+| GetDeviceInfo | 0x1001 | 605 bytes |
+| GetStorageIDs | 0x1004 | `0x00010001` (slot 1, card in) and `0x00020000` (slot 2; low word 0 means no card by PTP convention, and gphoto2 skipped it) |
+| GetStorageInfo | 0x1005 | slot 1 only |
+| GetObjectHandles | 0x1007 | params storage, 0, parent. Parent 0xFFFFFFFF gives the root (`DCIM`). 1211 handles came back in 28 ms |
+| GetObjectInfo | 0x1008 | one call per object, median 9 to 15 ms |
+| GetThumb | 0x100A | 22 ms |
+| GetPartialObject | 0x101B | params handle, offset, max bytes; 1 MiB chunks; the response parameter is the byte count |
+| GetDevicePropDesc | 0x1014 | 0x200A DevicePropNotSupported for some Nikon properties gphoto2 guesses |
+| NIKON_GetVendorCodes | 0x9439 | param 0xD, 1240 bytes, not decoded |
+| NIKON_EndLiveView | 0x9202 | sent by gphoto2 on exit |
+| CloseSession | 0x1003 | slow, see section 3 |
 
-- Number of objects on card:
-- Listing time:
-- Throughput for one JPEG (size, seconds, MB/s):
+Not exercised: GetObject (0x1009), GetLargeThumb (0x90C4), GetPartialObjectEx
+(0x9431), GetObjectSize (0x9421), GetObjectsMetaData (0x9434),
+GetPartialObjectHiSpeed (0x9400). All are in the supported list below but
+untested.
+
+### DeviceInfo
+
+- StandardVersion 100, VendorExtensionID `0xFFFFFFFF` on the wire,
+  VendorExtensionVersion 110, description `Microsoft.com/DeviceServices: 1.0`.
+  libgphoto2 rewrites the ID to Nikon's 0xA from the manufacturer string, so
+  the client must not rely on the ID to enable Nikon operations.
+- Manufacturer `Nikon Corporation`, model `Z5_2`, version `V1.20`.
+- Not in the supported list: GetFileInfoInBlock (0x9011), GetVendorPropCodes
+  (0x90CA), GetDevicePTPIPInfo (0x90E0).
+
+Supported operations (130). Names are libgphoto2's:
+
+```
+0x1001 GetDeviceInfo
+0x1002 OpenSession
+0x1003 CloseSession
+0x1004 GetStorageIDs
+0x1005 GetStorageInfo
+0x1006 GetNumObjects
+0x1007 GetObjectHandles
+0x1008 GetObjectInfo
+0x1009 GetObject
+0x100A GetThumb
+0x100B DeleteObject
+0x100E InitiateCapture
+0x100F FormatStore
+0x1012 SetObjectProtection
+0x1014 GetDevicePropDesc
+0x1015 GetDevicePropValue
+0x1016 SetDevicePropValue
+0x101B GetPartialObject
+0x90C0 NIKON_InitiateCaptureRecInSdram
+0x90C1 NIKON_AfDrive
+0x90C2 NIKON_ChangeCameraMode
+0x90C3 NIKON_DelImageSDRAM
+0x90C4 NIKON_GetLargeThumb
+0x90C7 NIKON_GetEvent
+0x90C8 NIKON_DeviceReady
+0x90C9 NIKON_SetPreWBData
+0x90CB NIKON_AfCaptureSDRAM
+0x90CC NIKON_GetPictCtrlData
+0x90CD NIKON_SetPictCtrlData
+0x90CE NIKON_DelCstPicCtrl
+0x90CF NIKON_GetPicCtrlCapability
+0x9201 NIKON_StartLiveView
+0x9202 NIKON_EndLiveView
+0x9203 NIKON_GetLiveViewImg
+0x9204 NIKON_MfDrive
+0x9205 NIKON_ChangeAfArea
+0x9206 NIKON_AfDriveCancel
+0x9207 NIKON_InitiateCaptureRecInMedia
+0x9209 NIKON_GetVendorStorageIDs
+0x920A NIKON_StartMovieRecInCard
+0x920B NIKON_EndMovieRec
+0x920C NIKON_TerminateCapture
+0x920F NIKON_GetFhdPicture
+0x9400 NIKON_GetPartialObjectHiSpeed
+0x9402 NIKON_StartSpotWb
+0x9403 NIKON_EndSpotWb
+0x9404 NIKON_ChangeSpotWbArea
+0x9405 NIKON_MeasureSpotWb
+0x9406 NIKON_EndSpotWbResultDisp
+0x940C NIKON_CancelImagesInSDRAM
+0x941C NIKON_GetEventEx
+0x9420 NIKON_SaveCameraSetting
+0x9421 NIKON_GetObjectSize
+0x9422 NIKON_ChangeMonitorOff
+0x9423 NIKON_GetLiveViewCompressedSize
+0x9424 NIKON_StartTracking
+0x9425 NIKON_EndTracking
+0x9426 NIKON_ChangeAELock
+0x9428 NIKON_GetLiveViewImageEx
+0x9431 NIKON_GetPartialObjectEx
+0x9433 NIKON_InitiatePixelMapping
+0x9434 NIKON_GetObjectsMetaData
+0x9435 NIKON_ChangeApplicationMode
+0x9436 NIKON_ResetMenu
+0x9439 NIKON_GetVendorCodes
+```
+
+Supported but not named in libgphoto2's `ptp.h` (65):
+
+```
+0x9401 0x9412 0x9413 0x942E 0x942F 0x943A 0x943B 0x943C 0x943D 0x943E
+0x943F 0x9440 0x9441 0x9442 0x9443 0x9444 0x9445 0x9446 0x9447 0x944C
+0x944D 0x944E 0x944F 0x9450 0x9451 0x9452 0x9453 0x9454 0x9455 0x9456
+0x9457 0x9458 0x9459 0x945A 0x9461 0x9463 0x9464 0x9465 0x9466 0x9467
+0x9468 0x9469 0x946A 0x946B 0x946D 0x946E 0x946F 0x9470 0x948B 0x948C
+0x948D 0x948E 0x9520 0x9521 0x9522 0x9523 0x9527 0x9528 0x9529 0x952A
+0x9530 0x9531 0x9532 0x9533 0x9535
+```
+
+Supported events (26): 0x4001 to 0x400A, 0x400C, 0x400D, 0xC101, 0xC102,
+0xC105, 0xC108, 0xC10A to 0xC10E, 0xC125 to 0xC128, 0xC700.
+
+### Object format codes
+
+Read from GetObjectInfo for all 1211 objects on the card:
+
+| Kind | ObjectFormat | ThumbFormat | Count |
+|---|---|---|---|
+| JPEG (`.JPG`) | 0x3801 | 0x3808, 160x120 | 727 |
+| NEF (`.NEF`) | 0x3000 (Undefined) | 0x3808, 160x120 | 474 |
+| Video (`.MOV`) | 0x300D | 0x3808, 160x120 | 10 |
+| Folder | 0x3001 | none | 2 |
+| HEIF | **not observed: no HEIF file was on the card** | | |
+
+- NEF has no code of its own, so the app must tell NEF apart by file extension
+  (or by "not 0x3801 and not the HEIF code").
+- DeviceInfo's image formats are 0x3801, 0x3000, 0x3001, 0x3008, 0x380D,
+  0x3002, 0x300D, 0xB200, 0xB201, 0xB982. 0xB200 and 0xB201 are not in
+  `ptp.h`; one of them may be HEIF, but that is a guess until a HEIF file is
+  listed.
+- Layout: `DCIM` (handle 0x11004000) > `100NZ5_2` (0x11190000) > files.
+  For a JPEG+NEF pair the handles differed only in the top bits: 0x291909B7
+  for `DSC_2487.JPG`, 0x091909B7 for `DSC_2487.NEF`. Seen on this card
+  only; do not rely on it.
+- Dates are local camera time, `YYYYMMDDThhmmss`, no time zone.
+
+## 5. Performance (observed, one run)
+
+- Objects on card: 1211 (727 JPEG, 474 NEF, 10 MOV), 128 GB card in slot 1.
+- Handle list: one GetObjectHandles call, 28 ms for 1211 handles.
+- Full listing the gphoto2 way (one GetObjectInfo per object): 24.8 s in the
+  first session, 12.8 s and 13.9 s in the next two; median 9 to 15 ms per
+  call, occasional calls of 200 to 500 ms. About 10 to 20 ms per object.
+- Thumbnail: 9558 bytes in 22 ms.
+- JPEG download: 9,881,243 bytes in about 5.9 s with GetPartialObject in
+  1 MiB chunks, **1.4 to 1.8 MB/s** per chunk (about 1.7 MB/s overall). Wi-Fi
+  band and distance were not recorded.
+- The probe script's "0.47 MB/s" is wrong as a throughput figure: it includes
+  the 14 s gphoto2 spent re-listing the card before the download.
 
 ## 6. Gate
 
-A file downloaded from the Z5II by a non-Nikon client: **not yet attempted.**
+A file downloaded from the Z5II by a non-Nikon client: **passed, 2026-11-13.**
+gphoto2 downloaded `DSC_2487.JPG` (9,881,243 bytes, equal to the size the
+camera reported) over PTP/IP. It was not compared byte for byte with the card
+copy.
+
+Open after M0:
+
+- HEIF format code (needs a HEIF file on the card).
+- Camera menu path, SSID/security, and whether the camera showed a prompt.
+- Whether a fresh GUID is accepted, and the idle timeout.
+- Why the first two connection attempts failed.
+- The faster Nikon operations (GetPartialObjectEx, GetObjectsMetaData,
+  GetLargeThumb) are advertised but untested.
