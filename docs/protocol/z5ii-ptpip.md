@@ -1,6 +1,6 @@
 # Z5II PTP/IP findings
 
-Status: **M0 run on the real Z5II on 2026-11-13 (firmware 1.20). Gate passed.**
+Status: **M0 and M1 gates passed on the real Z5II on 2026-11-13 (firmware 1.20).**
 Section 1 is reference data from libgphoto2 source. Sections 2 to 6 are what
 was observed with gphoto2 2.5.32 / libgphoto2 2.5.34 on macOS 26.6, read from a
 tcpdump capture of the session. Anything not observed is marked as such.
@@ -301,3 +301,48 @@ Open after M0:
 - Whether a fresh GUID is accepted, and the idle timeout.
 - The faster Nikon operations (GetPartialObjectEx, GetObjectsMetaData,
   GetLargeThumb) are advertised but untested.
+
+## 7. M1: nidge-cli on the camera (observed, one run, 2026-11-13)
+
+Run with `scripts/m1-probe.sh`; NidgeKit's own client, not gphoto2.
+
+Gate: **passed.** `nidge-cli get` downloaded `DSC_2487.JPG` and `DSC_2488.HIF`
+byte-identical to the copies gphoto2 made in M0 (same SHA-256). They were not
+compared with the card itself. A download killed at 2,097,152 bytes resumed
+from its `.part` file in a new session and was also identical. The cut was a
+killed client; a real Wi-Fi loss mid-file is only covered by the mock test.
+
+New facts about the camera:
+
+- A client GUID the camera had never seen, with the name `Nidge`, was accepted
+  with no prompt.
+- One session carried everything (summary, listing, thumbnails, two downloads)
+  and then stayed up for 60 s with a GetStorageIDs every 5 s. The Wi-Fi was
+  still up at the end of the run, after four sessions. A session left without
+  CloseSession (killed client) did not stop the next one connecting 2 s later.
+  A fully idle session was not tested.
+- GetObjectHandles filters work, each in under 50 ms:
+
+  | Query (storage 0x00010001) | Result |
+  |---|---|
+  | parent 0xFFFFFFFF | 1 handle (`DCIM`) |
+  | parent 0, format 0 | 1215 handles: every folder and file on the card |
+  | parent 0, format 0x3801 | 727 handles: the JPEGs |
+  | parent 0, format 0xB200 | 1 handle: the HEIF |
+  | parent 0, format 0x3001 | 2 handles: the folders |
+
+  So the app can get exactly the JPEG and HEIF handles in two calls without
+  touching NEF or video, and without walking folders.
+- Listing all 1213 files with one GetObjectInfo each took 32.3 s in one
+  session (median 19 ms per call). gphoto2's first listing of a session ran at
+  a similar rate that evening (median 18 ms) and later ones at 9 ms.
+- Thumbnails: 9558 and 7986 bytes, the same sizes gphoto2 got.
+
+Open:
+
+- **nidge-cli downloaded slower than gphoto2 minutes apart**: about 0.9 MB/s
+  per 1 MiB chunk against 1.3 MB/s (and 1.7 MB/s earlier in the day). Receive
+  windows were the same. nidge-cli acknowledged about every second segment and
+  gphoto2 nearly every one, so delayed ACKs are a suspect, not a finding. Next
+  experiment: `disableAckStretching` on the TCP options, and larger chunks.
+- GetPartialObjectEx, GetObjectsMetaData and GetLargeThumb are still untested.
