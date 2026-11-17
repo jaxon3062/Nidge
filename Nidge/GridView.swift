@@ -3,9 +3,12 @@ import SwiftUI
 
 struct GridView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("appearance") private var appearance = Appearance.system
     /// Cell frames in the grid's coordinates, for drag-to-select. Not view state: writing it must not redraw.
     @State private var frames = FrameStore()
     @State private var drag: (anchor: Int, select: Bool, base: Set<String>)?
+    @State private var selecting = false
+    @State private var viewing: String?
 
     var body: some View {
         ScrollView {
@@ -13,11 +16,15 @@ struct GridView: View {
                 ForEach(groupByDay(model.visibleItems), id: \.day) { group in
                     Section {
                         ForEach(group.items) { item in
-                            PhotoCell(item: item)
+                            PhotoCell(item: item, selecting: selecting)
                                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("grid")) } action: {
                                     frames.rects[item.key] = $0
                                 }
-                                .onTapGesture { toggle(item) }
+                                .onTapGesture { selecting ? toggle(item) : (viewing = item.key) }
+                                .onLongPressGesture {
+                                    if !selecting { selecting = true }
+                                    toggle(item)
+                                }
                         }
                     } header: {
                         dayHeader(group.day, group.items)
@@ -30,16 +37,25 @@ struct GridView: View {
         .navigationTitle("Camera")
         .navigationSubtitle(status)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $viewing) { PhotoViewer(current: $0) }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { optionsMenu }
             if model.isLoadingLibrary || !model.isConnected {
                 ToolbarItem(placement: .topBarTrailing) { ProgressView() }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(selecting ? "Cancel" : "Select") {
+                    selecting.toggle()
+                    if !selecting { model.selection = [] }
+                }
+                .disabled(model.visibleItems.isEmpty)
             }
         }
         .overlay { if model.visibleItems.isEmpty { emptyState } }
         .safeAreaInset(edge: .bottom, spacing: 0) { importBar }
         // Selection changes are instant; animating them was distracting.
         .transaction { $0.animation = nil }
+        .onChange(of: model.format) { selecting = false }
     }
 
     // MARK: Pieces
@@ -47,6 +63,7 @@ struct GridView: View {
     private var status: String {
         guard model.isConnected else { return "Looking for the camera…" }
         let count = model.visibleItems.count
+        if selecting { return model.selection.isEmpty ? "Select photos" : "\(model.selection.count) selected" }
         return model.isLoadingLibrary ? "Reading the card… \(count) photos" : "Connected · \(count) photos"
     }
 
@@ -60,8 +77,11 @@ struct GridView: View {
                 Text("Large (original)").tag(0)
                 ForEach(ImageResizer.cameraSizes, id: \.longSide) { Text($0.name).tag($0.longSide) }
             }
+            Picker("Appearance", selection: $appearance) {
+                ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue) }
+            }
         } label: {
-            Label("Import options", systemImage: "slider.horizontal.3")
+            Label("Options", systemImage: "slider.horizontal.3")
         }
     }
 
@@ -84,15 +104,17 @@ struct GridView: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .glassEffect()
             Spacer()
-            Button {
-                let keys = items.filter(selectable).map(\.key)
-                if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
-            } label: {
-                // Sized for the longer label so the button does not change width.
-                Text("Select day").hidden().overlay { Text(allSelected ? "Deselect" : "Select day") }
+            if selecting {
+                Button {
+                    let keys = items.filter(selectable).map(\.key)
+                    if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
+                } label: {
+                    // Sized for the longer label so the button does not change width.
+                    Text("Select day").hidden().overlay { Text(allSelected ? "Deselect" : "Select day") }
+                }
+                .font(.subheadline)
+                .buttonStyle(.glass)
             }
-            .font(.subheadline)
-            .buttonStyle(.glass)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
@@ -129,9 +151,11 @@ struct GridView: View {
                     Button("Cancel", role: .cancel) { model.cancelImport() }
                         .buttonStyle(.glass)
                 }
-            } else if !model.selection.isEmpty {
+            }
+            if !model.selection.isEmpty {
                 Button {
                     model.importSelection()
+                    selecting = false
                 } label: {
                     Text("Import ^[\(model.selection.count) photo](inflect: true)").frame(maxWidth: .infinity)
                 }
@@ -143,8 +167,9 @@ struct GridView: View {
 
     // MARK: Selection
 
+    /// Imported photos can be picked again, for another size or format; queued ones cannot.
     private func selectable(_ item: PhotoItem) -> Bool {
-        !model.isImported(item) && !model.isQueued(item)
+        !model.isQueued(item)
     }
 
     private func toggle(_ item: PhotoItem) {
@@ -152,9 +177,10 @@ struct GridView: View {
         if model.selection.remove(item.key) == nil { model.selection.insert(item.key) }
     }
 
-    /// Sweeping sideways selects (or deselects, if it started on a selected photo) everything
-    /// between the first photo touched and the one under the finger.
+    /// In selection mode, sweeping sideways selects (or deselects, if it started on a selected
+    /// photo) everything between the first photo touched and the one under the finger.
     private func dragChanged(_ location: CGPoint) {
+        guard selecting else { return }
         let items = model.visibleItems
         guard let key = frames.rects.first(where: { $0.value.contains(location) })?.key,
               let index = items.firstIndex(where: { $0.key == key }) else { return }
@@ -171,6 +197,20 @@ struct GridView: View {
     }
 }
 
+enum Appearance: String, CaseIterable {
+    case system = "Match system"
+    case light = "Light"
+    case dark = "Dark"
+
+    var scheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 private final class FrameStore {
     var rects: [String: CGRect] = [:]
 }
@@ -178,6 +218,7 @@ private final class FrameStore {
 private struct PhotoCell: View {
     @Environment(AppModel.self) private var model
     let item: PhotoItem
+    let selecting: Bool
     @State private var image: UIImage?
 
     var body: some View {
@@ -190,15 +231,18 @@ private struct PhotoCell: View {
                 if let image { Image(uiImage: image).resizable().scaledToFill() }
             }
             .clipped()
-            .opacity(imported ? 0.5 : 1)
             .overlay(alignment: .bottomTrailing) {
                 if selected {
                     badge("checkmark.circle.fill", .white, Color.accentColor)
-                } else if imported {
-                    badge("checkmark.circle.fill", .white, .green)
                 } else if queued {
                     badge("arrow.down.circle.fill", .white, .orange)
+                } else if selecting {
+                    badge("circle", .white, .clear).shadow(radius: 1)
                 }
+            }
+            .overlay(alignment: .bottomLeading) {
+                // Kept while selected, so re-importing an imported photo stays visible.
+                if imported { badge("checkmark.circle.fill", .white, .green) }
             }
             .overlay(alignment: .topLeading) {
                 if item.isRAW {
@@ -214,8 +258,10 @@ private struct PhotoCell: View {
             }
             .accessibilityElement()
             .accessibilityLabel(item.filename)
-            .accessibilityValue(imported ? "Imported" : queued ? "Waiting to import" : selected ? "Selected" : "")
+            .accessibilityValue([imported ? "Imported" : nil, queued ? "Waiting to import" : nil, selected ? "Selected" : nil]
+                .compactMap { $0 }.joined(separator: ", "))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityHint(selecting ? "Selects or deselects the photo" : "Opens the photo")
     }
 
     private func badge(_ name: String, _ foreground: Color, _ background: Color) -> some View {

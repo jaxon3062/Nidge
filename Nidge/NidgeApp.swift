@@ -5,6 +5,7 @@ struct NidgeApp: App {
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarded") private var onboarded = false
+    @AppStorage("appearance") private var appearance = Appearance.system
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct NidgeApp: App {
                 GridView()
             }
             .environment(model)
+            .preferredColorScheme(appearance.scheme)
             .fullScreenCover(isPresented: .constant(!onboarded)) {
                 OnboardingView { onboarded = true }
             }

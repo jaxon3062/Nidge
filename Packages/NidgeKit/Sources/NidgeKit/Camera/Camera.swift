@@ -68,6 +68,12 @@ public struct Camera: Sendable {
         try await session.transact(PTPOperation.getThumb, [handle]).data
     }
 
+    /// Nikon's larger preview image (GetLargeThumb). Untested on the Z5II: callers must cope
+    /// with a refusal or with data that is not an image.
+    public func largeThumbnail(_ handle: UInt32) async throws -> Data {
+        try await session.transact(PTPOperation.nikonGetLargeThumb, [handle]).data
+    }
+
     public func read(_ handle: UInt32, offset: UInt32, length: UInt32) async throws -> Data {
         try await session.transact(PTPOperation.getPartialObject, [handle, offset, length]).data
     }

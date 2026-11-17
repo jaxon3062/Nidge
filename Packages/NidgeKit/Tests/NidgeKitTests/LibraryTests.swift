@@ -24,14 +24,16 @@ import NidgeMock
         #expect(groupByDay([]).isEmpty)
     }
 
-    @Test func ledgerSkipsDuplicatesAndSurvivesReload() throws {
+    @Test func ledgerSkipsQueuedAndSurvivesReload() throws {
         let a = Self.item("A.JPG", "20261113T000001"), b = Self.item("B.JPG", "20261113T000002")
         var ledger = ImportLedger()
         #expect(ledger.enqueue([a, b]) == 2)
         #expect(ledger.enqueue([a]) == 0)  // already queued
         ledger.markImported(a)
         #expect(ledger.pending == [b])
-        #expect(ledger.enqueue([a, b]) == 0)  // imported or queued
+        #expect(ledger.enqueue([a, b]) == 1)  // a again (another size or format); b is still queued
+        #expect(ledger.pending == [b, a])
+        #expect(ledger.imported.contains(a.key))  // still marked as imported
         // Same name, different shot: not a duplicate.
         #expect(ledger.enqueue([Self.item("A.JPG", "20270101T000000")]) == 1)
 

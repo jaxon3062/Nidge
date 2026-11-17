@@ -68,11 +68,12 @@ public struct ImportLedger: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
-    /// Queues items that are neither imported nor already queued. Returns how many were added.
+    /// Queues items that are not already queued. Imported items can be queued again, for
+    /// another size or format. Returns how many were added.
     @discardableResult
     public mutating func enqueue(_ items: [PhotoItem]) -> Int {
         let queued = Set(pending.map(\.key))
-        let fresh = items.filter { !imported.contains($0.key) && !queued.contains($0.key) }
+        let fresh = items.filter { !queued.contains($0.key) }
         pending += fresh
         return fresh.count
     }

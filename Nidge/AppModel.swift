@@ -64,16 +64,25 @@ final class AppModel {
 
     private static let support = URL.applicationSupportDirectory
     private static let ledgerURL = support.appendingPathComponent("ledger.json")
+    private static let itemsURL = URL.cachesDirectory.appendingPathComponent("items.json")
     private static let thumbnails = URL.cachesDirectory.appendingPathComponent("thumbnails")
+    private static let previews = URL.cachesDirectory.appendingPathComponent("previews")
     private static let downloads = URL.cachesDirectory.appendingPathComponent("downloads")
 
     init() {
-        for directory in [Self.support, Self.thumbnails, Self.downloads] {
+        for directory in [Self.support, Self.thumbnails, Self.previews, Self.downloads] {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         ledger = ImportLedger(contentsOf: Self.ledgerURL)
         batchTotal = ledger.pending.count
+        // The last card's listing, so the grid appears at once and a reconnect only reads new shots.
+        // shortcut: trusted while the handles match; a different card with identical handles would show stale entries until imported (imports re-check)
+        items = (try? JSONDecoder().decode([PhotoItem].self, from: Data(contentsOf: Self.itemsURL))) ?? []
     }
+
+    /// Thumbnail and preview requests waiting on the camera. The card listing pauses while
+    /// there are any, so what is on screen loads first.
+    @ObservationIgnored private var visibleRequests = 0
 
     // MARK: Connection
 
@@ -141,6 +150,7 @@ final class AppModel {
         let known = Set(items.map(\.handle))
         var fresh: [PhotoItem] = []
         for handle in handles where !known.contains(handle) {
+            while visibleRequests > 0 { try await Task.sleep(for: .milliseconds(10)) }
             let info = try await camera.objectInfo(handle)
             let item = PhotoItem(handle: handle, info: info)
             // The "undefined" format can hold things other than NEF; skip those.
@@ -149,6 +159,7 @@ final class AppModel {
         }
         merge(&fresh)
         loadedRAW = includeRAW
+        try? JSONEncoder().encode(items).write(to: Self.itemsURL, options: .atomic)
     }
 
     private func merge(_ fresh: inout [PhotoItem]) {
@@ -162,11 +173,43 @@ final class AppModel {
     func thumbnail(for item: PhotoItem) async -> UIImage? {
         let file = Self.thumbnails.appendingPathComponent(item.key + ".jpg")
         if let cached = UIImage(contentsOfFile: file.path) { return cached }
-        guard let camera, let data = try? await camera.thumbnail(item.handle), let image = UIImage(data: data) else {
-            return nil
-        }
+        guard let camera else { return nil }
+        visibleRequests += 1
+        defer { visibleRequests -= 1 }
+        guard let data = try? await camera.thumbnail(item.handle), let image = UIImage(data: data) else { return nil }
         try? data.write(to: file, options: .atomic)
         return image
+    }
+
+    /// A screen-sized image for the viewer, from the disk cache when possible. Tries the
+    /// camera's large preview first, then downloads the original and shrinks it (not for RAW).
+    func preview(for item: PhotoItem) async -> UIImage? {
+        let file = Self.previews.appendingPathComponent(item.key + ".jpg")
+        if let cached = UIImage(contentsOfFile: file.path) { return cached }
+        guard let camera else { return nil }
+        visibleRequests += 1
+        defer { visibleRequests -= 1 }
+        if let data = try? await camera.largeThumbnail(item.handle), let image = UIImage(data: data),
+           max(image.size.width, image.size.height) >= 1000 {
+            try? data.write(to: file, options: .atomic)
+            return image
+        }
+        guard !item.isRAW, !Task.isCancelled else { return nil }
+        let original = Self.previews.appendingPathComponent(item.key + "-" + item.filename)
+        defer { try? FileManager.default.removeItem(at: original) }
+        do {
+            try await camera.download(item.handle, size: item.size, to: original)
+            let data: Data? = try await Task.detached {
+                let shrunk = try ImageResizer.resize(original, longSide: 2560)
+                defer { if shrunk != original { try? FileManager.default.removeItem(at: shrunk) } }
+                return UIImage(contentsOfFile: shrunk.path)?.jpegData(compressionQuality: 0.85)
+            }.value
+            guard let data, let image = UIImage(data: data) else { return nil }
+            try? data.write(to: file, options: .atomic)
+            return image
+        } catch {
+            return nil  // a dropped connection keeps the .part file for the next try
+        }
     }
 
     // MARK: Import queue

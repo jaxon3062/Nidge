@@ -10,6 +10,8 @@ public enum PTPOperation {
     public static let getObjectInfo: UInt16 = 0x1008
     public static let getThumb: UInt16 = 0x100A
     public static let getPartialObject: UInt16 = 0x101B
+    /// Nikon GetLargeThumb. Advertised by the Z5II; what it returns is untested.
+    public static let nikonGetLargeThumb: UInt16 = 0x90C4
 }
 
 public enum PTPResponse {
