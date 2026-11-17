@@ -110,11 +110,14 @@ final class AppModel {
         // The last card's details, so the grid appears at once and a reconnect only reads new shots.
         // shortcut: trusted while the handles match; a different card with identical handles would show stale entries until imported (imports re-check)
         items = (try? JSONDecoder().decode([PhotoItem].self, from: Data(contentsOf: Self.itemsURL))) ?? []
-        // Partial previews from older builds.
-        for file in (try? FileManager.default.contentsOfDirectory(at: Self.previews, includingPropertiesForKeys: nil)) ?? []
-        where file.pathExtension == "part" && !file.lastPathComponent.contains("-full.") {
-            try? FileManager.default.removeItem(at: file)
-        }
+        Self.clearPreviews()  // left over if the app was killed while connected
+    }
+
+    /// Deletes every viewer image bigger than a thumbnail (quick, sharp and full-resolution
+    /// copies, and partial downloads of them). Thumbnails stay for browsing offline.
+    private static func clearPreviews() {
+        try? FileManager.default.removeItem(at: previews)
+        try? FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true)
     }
 
     /// Called as a photo appears on screen, to read details for the next two screens.
@@ -163,6 +166,7 @@ final class AppModel {
                 isConnected = false
                 isLoadingLibrary = false
                 updateIdleTimer()
+                Self.clearPreviews()
             }
             // Reading the card and importing share the session; transactions take turns.
             try await withThrowingTaskGroup(of: Void.self) { group in
