@@ -51,21 +51,23 @@ struct GridView: View {
         .overlay { if model.visibleItems.isEmpty { emptyState } }
         .safeAreaInset(edge: .bottom, spacing: 0) { importBar }
         // Selection changes are instant; animating them was distracting.
-        .transaction { $0.animation = nil }
+        .transaction(value: model.selection) { $0.animation = nil }
+        .transaction(value: selecting) { $0.animation = nil }
+        // The tap Photos gives when a long press starts selecting.
+        .sensoryFeedback(.impact(weight: .medium), trigger: selecting) { old, new in !old && new }
         .onChange(of: model.format) { selecting = false }
     }
 
     // MARK: Pieces
 
     private func cell(_ item: PhotoItem) -> some View {
-        PhotoCell(item: item, selecting: selecting)
+        PhotoCell(item: item, selecting: selecting) { longPressed(item) }
             .matchedTransitionSource(id: item.key, in: zoom)
             .onAppear { model.noteVisible(item) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("grid")) } action: { rect in
                 frames.rects[item.key] = rect
             }
             .onTapGesture { tapped(item) }
-            .onLongPressGesture { longPressed(item) }
     }
 
     private func tapped(_ item: PhotoItem) {
@@ -121,17 +123,19 @@ struct GridView: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .glassEffect()
             Spacer()
-            if selecting {
-                Button {
-                    let keys = items.filter(selectable).map(\.key)
-                    if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
-                } label: {
-                    // Sized for the longer label so the button does not change width.
-                    Text("Select day").hidden().overlay { Text(allSelected ? "Deselect" : "Select day") }
-                }
-                .font(.subheadline)
-                .buttonStyle(.glass)
+            Button {
+                let keys = items.filter(selectable).map(\.key)
+                if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
+            } label: {
+                // Sized for the longer label so the button does not change width.
+                Text("Select day").hidden().overlay { Text(allSelected ? "Deselect" : "Select day") }
             }
+            .font(.subheadline)
+            .buttonStyle(.glass)
+            // Always laid out, so entering selection mode does not make the headers taller.
+            .opacity(selecting ? 1 : 0)
+            .disabled(!selecting)
+            .accessibilityHidden(!selecting)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
@@ -236,7 +240,9 @@ private struct PhotoCell: View {
     @Environment(AppModel.self) private var model
     let item: PhotoItem
     let selecting: Bool
+    let onLongPress: () -> Void
     @State private var image: UIImage?
+    @State private var pressed = false
 
     var body: some View {
         let selected = model.selection.contains(item.key)
@@ -269,6 +275,12 @@ private struct PhotoCell: View {
             }
             .overlay { if selected { Rectangle().strokeBorder(Color.accentColor, lineWidth: 3) } }
             .contentShape(Rectangle())
+            // Sinks under the finger during a long press and springs back, like Photos.
+            .scaleEffect(pressed ? 0.92 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: pressed)
+            .onLongPressGesture(minimumDuration: 0.4) {
+                onLongPress()
+            } onPressingChanged: { pressed = $0 }
             // Reload when the camera comes back, for thumbnails that are not cached yet.
             .task(id: model.isConnected) {
                 if image == nil { image = await model.thumbnail(for: item) }
