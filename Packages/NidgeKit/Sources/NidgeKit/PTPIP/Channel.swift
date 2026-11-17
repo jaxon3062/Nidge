@@ -17,8 +17,11 @@ public final class PTPIPChannel: @unchecked Sendable {
     public convenience init(host: String, port: UInt16, readTimeout: TimeInterval = 15) {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
+        let parameters = NWParameters(tls: nil, tcp: tcp)
+        // On the camera's Wi-Fi an iPhone still has cellular; the camera is never there.
+        parameters.prohibitedInterfaceTypes = [.cellular]
         self.init(connection: NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!,
-                                           using: NWParameters(tls: nil, tcp: tcp)),
+                                           using: parameters),
                   readTimeout: readTimeout)
     }
 

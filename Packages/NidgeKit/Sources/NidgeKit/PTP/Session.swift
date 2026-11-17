@@ -60,10 +60,13 @@ public actor PTPSession {
         let previous = tail
         let task = Task {
             await previous?.value
+            // A caller that gave up while queued (a thumbnail scrolled away) costs nothing. Once
+            // a transaction has started it always runs to its response, to keep the stream in step.
+            try Task.checkCancellation()
             return try await self.run(code, params)
         }
         tail = Task { _ = try? await task.value }
-        return try await task.value
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     private func run(_ code: UInt16, _ params: [UInt32]) async throws -> (params: [UInt32], data: Data) {

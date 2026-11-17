@@ -14,7 +14,8 @@ Commands joined with "+" share one session, which the camera seems to prefer.
   thumb <handle|name> [dir]    save the camera's thumbnail
   get <handle|name> [dir]      download, resuming <file>.part; reconnects if cut
   hold <seconds>               keep the session open, poll every 5 s
-  mock <dir> [port]            serve the files in <dir> as a fake camera on localhost
+  mock <dir> [port]            serve the files in <dir> as a fake camera on localhost;
+                               <file>.thumb.jpg, if present, is that file's thumbnail
 """
 
 struct Failure: Error, CustomStringConvertible {
@@ -40,18 +41,9 @@ final class Runner {
     var port: UInt16 = 15740
     var camera: Camera?
 
-    /// A client GUID kept between runs, like gphoto2 does. Whether the Z5II cares is untested.
-    static let guid: Data = {
-        let defaults = UserDefaults.standard
-        if let saved = defaults.data(forKey: "guid"), saved.count == 16 { return saved }
-        let fresh = withUnsafeBytes(of: UUID().uuid) { Data($0) }
-        defaults.set(fresh, forKey: "guid")
-        return fresh
-    }()
-
     func connected() async throws -> Camera {
         if let camera { return camera }
-        let fresh = try await Camera.connect(host: host, port: port, guid: Self.guid, name: "Nidge")
+        let fresh = try await Camera.connect(host: host, port: port, guid: Camera.persistentGUID(), name: "Nidge")
         log("connected to \(fresh.session.cameraName.replacing(/\d{5,}/, with: "<digits>"))")
         camera = fresh
         return fresh
@@ -176,8 +168,13 @@ final class Runner {
                 case "NEF": format = 0x3000
                 default: return nil
                 }
-                return MockCamera.File(name: name, format: format,
-                                       data: try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(name)))
+                let url = URL(fileURLWithPath: directory).appendingPathComponent(name)
+                let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? Date()
+                let stamp = DateFormatter()
+                stamp.dateFormat = "yyyyMMdd'T'HHmmss"
+                return MockCamera.File(name: name, format: format, data: try Data(contentsOf: url),
+                                       thumbnail: (try? Data(contentsOf: url.appendingPathExtension("thumb.jpg"))) ?? Data(),
+                                       captureDate: stamp.string(from: modified))
             }
             let mock = MockCamera(files: files)
             let port = try await mock.start(port: rest.count > 1 ? UInt16(rest[1]) ?? 0 : 0)

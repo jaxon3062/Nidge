@@ -11,12 +11,15 @@ public actor MockCamera {
         public var format: UInt16
         public var data: Data
         public var thumbnail: Data
+        public var captureDate: String
 
-        public init(name: String, format: UInt16, data: Data, thumbnail: Data = Data()) {
+        public init(name: String, format: UInt16, data: Data, thumbnail: Data = Data(),
+                    captureDate: String = "20260101T000000") {
             self.name = name
             self.format = format
             self.data = data
             self.thumbnail = thumbnail
+            self.captureDate = captureDate
         }
     }
 
@@ -103,7 +106,7 @@ public actor MockCamera {
                                   parent: Self.folderHandle, filename: file.name)
             info.thumbFormat = 0x3808
             info.thumbSize = UInt32(file.thumbnail.count)
-            info.captureDate = "20260101T000000"
+            info.captureDate = file.captureDate
             return info
         }
     }

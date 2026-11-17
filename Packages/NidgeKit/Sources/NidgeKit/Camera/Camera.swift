@@ -88,6 +88,7 @@ public struct Camera: Sendable {
         defer { try? file.close() }
         try file.seekToEnd()
         while offset < size {
+            try Task.checkCancellation()
             let chunk = try await read(handle, offset: offset, length: min(Self.chunkSize, size - offset))
             guard !chunk.isEmpty, UInt64(offset) + UInt64(chunk.count) <= UInt64(size) else { throw PTPError.truncated }
             try file.write(contentsOf: chunk)
