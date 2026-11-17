@@ -9,23 +9,14 @@ struct GridView: View {
     @State private var drag: (anchor: Int, select: Bool, base: Set<String>)?
     @State private var selecting = false
     @State private var viewing: String?
+    @Namespace private var zoom
 
     var body: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2, pinnedViews: .sectionHeaders) {
                 ForEach(groupByDay(model.visibleItems), id: \.day) { group in
                     Section {
-                        ForEach(group.items) { item in
-                            PhotoCell(item: item, selecting: selecting)
-                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("grid")) } action: {
-                                    frames.rects[item.key] = $0
-                                }
-                                .onTapGesture { selecting ? toggle(item) : (viewing = item.key) }
-                                .onLongPressGesture {
-                                    if !selecting { selecting = true }
-                                    toggle(item)
-                                }
-                        }
+                        ForEach(group.items) { item in cell(item) }
                     } header: {
                         dayHeader(group.day, group.items)
                     }
@@ -33,11 +24,17 @@ struct GridView: View {
             }
             .coordinateSpace(.named("grid"))
             .gesture(HorizontalPan(changed: dragChanged) { drag = nil })
+            if model.hasMore, !model.visibleItems.isEmpty {
+                ProgressView().padding().onAppear { model.noteEndVisible() }
+            }
         }
         .navigationTitle("Camera")
         .navigationSubtitle(status)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $viewing) { PhotoViewer(current: $0) }
+        .navigationDestination(item: $viewing) { key in
+            // The zoom transition also gives Photos' swipe down to close.
+            PhotoViewer(current: key).navigationTransition(.zoom(sourceID: key, in: zoom))
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { optionsMenu }
             if model.isLoadingLibrary || !model.isConnected {
@@ -60,11 +57,31 @@ struct GridView: View {
 
     // MARK: Pieces
 
+    private func cell(_ item: PhotoItem) -> some View {
+        PhotoCell(item: item, selecting: selecting)
+            .matchedTransitionSource(id: item.key, in: zoom)
+            .onAppear { model.noteVisible(item) }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("grid")) } action: { rect in
+                frames.rects[item.key] = rect
+            }
+            .onTapGesture { tapped(item) }
+            .onLongPressGesture { longPressed(item) }
+    }
+
+    private func tapped(_ item: PhotoItem) {
+        if selecting { toggle(item) } else { viewing = item.key }
+    }
+
+    private func longPressed(_ item: PhotoItem) {
+        if !selecting { selecting = true }
+        toggle(item)
+    }
+
     private var status: String {
         guard model.isConnected else { return "Looking for the camera…" }
-        let count = model.visibleItems.count
+        let count = model.format == .both ? "\(model.handles.count) files" : "\(model.handles.count) photos"
         if selecting { return model.selection.isEmpty ? "Select photos" : "\(model.selection.count) selected" }
-        return model.isLoadingLibrary ? "Reading the card… \(count) photos" : "Connected · \(count) photos"
+        return "Connected · \(count)"
     }
 
     private var optionsMenu: some View {
@@ -87,7 +104,7 @@ struct GridView: View {
 
     @ViewBuilder private var emptyState: some View {
         if model.isConnected {
-            if !model.isLoadingLibrary {
+            if !model.isLoadingLibrary, model.handles.isEmpty {
                 ContentUnavailableView("No photos", systemImage: "photo.on.rectangle",
                                        description: Text(model.format == .raw ? "The card has no RAW photos." : "The card has no JPEG or HEIF photos."))
             }

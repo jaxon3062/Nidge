@@ -85,15 +85,15 @@ public struct ImportLedger: Codable, Equatable, Sendable {
 }
 
 extension Camera {
-    /// Handles of every JPEG and HEIF on every card, using the format filter the Z5II honours
-    /// (one call per format per card, no video). `includeRAW` adds the "undefined" format,
-    /// which is where NEF files are. The order is only a fetch-order hint, newest first on the
-    /// Z5II; sort by capture date for display.
-    public func photoHandles(includeRAW: Bool = false) async throws -> [UInt32] {
+    /// Handles of every file of the given formats on every card, using the format filter the
+    /// Z5II honours (one call per format per card). NEF files are in the "undefined" format.
+    /// Sorted by the low 28 bits, which on the Z5II are folder and file number, so newest
+    /// first and the JPEG/HEIF and NEF of one shot side by side.
+    public func photoHandles(formats: [UInt16] = [PTPObjectFormat.jpeg, PTPObjectFormat.nikonHEIF]) async throws -> [UInt32] {
         var handles: [UInt32] = []
         // A storage ID whose low 16 bits are zero has no card (seen for the empty slot 2).
         for storage in try await storageIDs() where storage & 0xFFFF != 0 {
-            for format in [PTPObjectFormat.jpeg, PTPObjectFormat.nikonHEIF] + (includeRAW ? [PTPObjectFormat.undefined] : []) {
+            for format in formats {
                 handles += try await objectHandles(storage: storage, format: format, parent: 0)
             }
         }

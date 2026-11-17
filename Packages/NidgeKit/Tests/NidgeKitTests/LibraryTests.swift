@@ -52,7 +52,7 @@ import NidgeMock
         let camera = try await Camera.connect(host: "127.0.0.1", port: port, guid: Data(0..<16), name: "test", attempts: 1)
         let handles = try await camera.photoHandles()
         #expect(handles == [0x102, 0x100])
-        let withRAW = try await camera.photoHandles(includeRAW: true)
+        let withRAW = try await camera.photoHandles(formats: [PTPObjectFormat.jpeg, PTPObjectFormat.nikonHEIF, PTPObjectFormat.undefined])
         #expect(withRAW == [0x102, 0x101, 0x100])
         let raw = PhotoItem(handle: 0x101, info: try await camera.objectInfo(0x101))
         let jpeg = PhotoItem(handle: 0x100, info: try await camera.objectInfo(0x100))
@@ -152,5 +152,50 @@ import UniformTypeIdentifiers
         try Data("not an image".utf8).write(to: junk)
         defer { try? FileManager.default.removeItem(at: junk) }
         #expect(throws: ImageResizer.Failure.self) { try ImageResizer.resize(junk, longSide: 3024) }
+    }
+}
+
+@Suite struct EmbeddedPreviewTests {
+    /// A JPEG header with an MPF index like the Z5II's: primary, then two previews.
+    static func header(little: Bool) -> Data {
+        func u16(_ v: Int) -> [UInt8] { little ? [UInt8(v & 0xFF), UInt8(v >> 8)] : [UInt8(v >> 8), UInt8(v & 0xFF)] }
+        func u32(_ v: Int) -> [UInt8] { little ? (0..<4).map { UInt8((v >> (8 * $0)) & 0xFF) } : (0..<4).reversed().map { UInt8((v >> (8 * $0)) & 0xFF) } }
+        var tiff: [UInt8] = little ? [0x49, 0x49, 0x2A, 0x00] : [0x4D, 0x4D, 0x00, 0x2A]
+        tiff += u32(8) + u16(2)                              // IFD at 8, two tags
+        tiff += u16(0xB000) + u16(7) + u32(4) + [0x30, 0x31, 0x30, 0x30]  // version, ignored
+        tiff += u16(0xB002) + u16(7) + u32(48) + u32(38)     // 3 entries at 38
+        tiff += u32(0)
+        tiff += u32(0x20030000) + u32(5000) + u32(0) + u32(0)        // primary
+        tiff += u32(0x00010001) + u32(900) + u32(9000) + u32(0)      // big preview
+        tiff += u32(0x00010001) + u32(200) + u32(6000) + u32(0)      // small preview
+        let app1: [UInt8] = [0xFF, 0xE1, 0x00, 0x08] + Array("Exif\0\0".utf8)
+        let app2: [UInt8] = [0xFF, 0xE2] + [UInt8((tiff.count + 6) >> 8), UInt8((tiff.count + 6) & 0xFF)] + Array("MPF\0".utf8) + tiff
+        return Data([0xFF, 0xD8] + app1 + app2 + [0xFF, 0xDA, 0x00, 0x02])
+    }
+
+    @Test(arguments: [true, false]) func findsPreviewRangesSmallestFirst(little: Bool) {
+        let header = Self.header(little: little)
+        let base = 2 + 10 + 8  // SOI, APP1 (marker + 8), APP2 marker, length and "MPF\0"
+        #expect(EmbeddedPreview.jpegRanges(header: header, fileSize: 20000) == [base + 6000..<base + 6200, base + 9000..<base + 9900])
+        // A range past the end of the file is dropped.
+        #expect(EmbeddedPreview.jpegRanges(header: header, fileSize: base + 9000) == [base + 6000..<base + 6200])
+    }
+
+    @Test func ignoresFilesWithoutIndexAndCutHeaders() {
+        #expect(EmbeddedPreview.jpegRanges(header: Data([0xFF, 0xD8, 0xFF, 0xDA, 0, 2]), fileSize: 100).isEmpty)
+        #expect(EmbeddedPreview.jpegRanges(header: Data("not a jpeg".utf8), fileSize: 100).isEmpty)
+        let header = Self.header(little: true)
+        for cut in stride(from: 0, to: header.count, by: 7) {
+            _ = EmbeddedPreview.jpegRanges(header: header.prefix(cut), fileSize: 20000)  // must not crash
+        }
+    }
+
+    /// Set NIDGE_SAMPLE_JPEG to a Z5II JPEG to check against the real camera layout.
+    @Test func realZ5IIJPEGIfGiven() throws {
+        guard let path = ProcessInfo.processInfo.environment["NIDGE_SAMPLE_JPEG"] else { return }
+        let file = try Data(contentsOf: URL(fileURLWithPath: path))
+        let ranges = EmbeddedPreview.jpegRanges(header: file.prefix(EmbeddedPreview.headerLength), fileSize: file.count)
+        #expect(ranges.count == 2)
+        for range in ranges { #expect(file[range].prefix(2) == Data([0xFF, 0xD8])) }
     }
 }

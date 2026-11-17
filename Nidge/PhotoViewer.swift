@@ -9,8 +9,11 @@ struct PhotoViewer: View {
     var body: some View {
         let items = model.visibleItems
         TabView(selection: $current) {
-            ForEach(items) { item in
-                PhotoPage(item: item).tag(item.key)
+            ForEach(items.indices, id: \.self) { index in
+                let item = items[index]
+                PhotoPage(item: item, isCurrent: item.key == current,
+                          neighbors: [index + 1, index - 1].filter(items.indices.contains).map { items[$0] })
+                    .tag(item.key)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
@@ -18,6 +21,8 @@ struct PhotoViewer: View {
         .navigationTitle(items.first { $0.key == current }?.filename ?? "")
         .navigationSubtitle(items.first { $0.key == current }.map { Self.date($0.captureDate) } ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { model.viewerOpen = true }
+        .onDisappear { model.viewerOpen = false }
         .toolbar {
             if let item = items.first(where: { $0.key == current }), model.isImported(item) {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -37,13 +42,16 @@ struct PhotoViewer: View {
 private struct PhotoPage: View {
     @Environment(AppModel.self) private var model
     let item: PhotoItem
-    @State private var thumbnail: UIImage?
-    @State private var full: UIImage?
-    @State private var loading = true
+    let isCurrent: Bool
+    /// Fetched after this photo is done, so a swipe to either side is instant.
+    let neighbors: [PhotoItem]
+    @State private var image: UIImage?
+    @State private var sharp = false
+    @State private var loading = false
 
     var body: some View {
         ZStack {
-            if let image = full ?? thumbnail {
+            if let image {
                 Image(uiImage: image).resizable().scaledToFit()
             }
             if loading { ProgressView() }
@@ -51,12 +59,18 @@ private struct PhotoPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement()
         .accessibilityLabel(item.filename)
-        .task(id: model.isConnected) {
-            guard full == nil else { return }
-            loading = true
-            if thumbnail == nil { thumbnail = await model.thumbnail(for: item) }
-            full = await model.preview(for: item)
-            loading = false
+        // Only the photo on screen loads; swiping away cancels what it was fetching.
+        .task(id: "\(model.isConnected) \(isCurrent)") {
+            if image == nil { image = await model.thumbnail(for: item) }
+            guard isCurrent else { return }
+            if !sharp {
+                loading = true
+                if let quick = await model.quickPreview(for: item) { image = quick }
+                if let full = await model.preview(for: item) { image = full; sharp = true }
+                loading = false
+            }
+            for neighbor in neighbors where !Task.isCancelled { _ = await model.quickPreview(for: neighbor) }
+            for neighbor in neighbors where !Task.isCancelled { _ = await model.preview(for: neighbor) }
         }
     }
 }
