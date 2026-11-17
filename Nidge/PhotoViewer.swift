@@ -46,13 +46,17 @@ private struct PhotoPage: View {
     /// Fetched after this photo is done, so a swipe to either side is instant.
     let neighbors: [PhotoItem]
     @State private var image: UIImage?
+    /// The file the image comes from: the photo, or a RAW file's JPEG/HEIF twin.
+    @State private var shown: PhotoItem?
     @State private var sharp = false
     @State private var loading = false
+    @State private var fullResolution: Task<Void, Never>?
+    @State private var isFullResolution = false
 
     var body: some View {
         ZStack {
             if let image {
-                ZoomableImage(image: image)
+                ZoomableImage(image: image) { loadFullResolution() }
             }
             if loading { ProgressView() }
         }
@@ -62,15 +66,43 @@ private struct PhotoPage: View {
         // Only the photo on screen loads; swiping away cancels what it was fetching.
         .task(id: "\(model.isConnected) \(isCurrent)") {
             if image == nil { image = await model.thumbnail(for: item) }
-            guard isCurrent else { return }
+            guard isCurrent else {
+                fullResolution?.cancel()
+                // Let go of a 24 MP image once it is off screen.
+                if isFullResolution, let shown, let preview = await model.preview(for: shown) {
+                    image = preview
+                    isFullResolution = false
+                }
+                return
+            }
+            let target = await model.viewable(item)
+            shown = target
             if !sharp {
                 loading = true
-                if let quick = await model.quickPreview(for: item) { image = quick }
-                if let full = await model.preview(for: item) { image = full; sharp = true }
+                if let quick = await model.quickPreview(for: target) { image = quick }
+                if let full = await model.preview(for: target) { image = full; sharp = true }
                 loading = false
             }
-            for neighbor in neighbors where !Task.isCancelled { _ = await model.quickPreview(for: neighbor) }
-            for neighbor in neighbors where !Task.isCancelled { _ = await model.preview(for: neighbor) }
+            for neighbor in neighbors where !Task.isCancelled {
+                _ = await model.quickPreview(for: await model.viewable(neighbor))
+            }
+            for neighbor in neighbors where !Task.isCancelled {
+                _ = await model.preview(for: await model.viewable(neighbor))
+            }
+        }
+    }
+
+    /// Zooming in past the preview's detail fetches the original, once.
+    private func loadFullResolution() {
+        guard fullResolution == nil, isCurrent, let shown, !shown.isRAW else { return }
+        fullResolution = Task {
+            loading = true
+            if let full = await model.original(for: shown), !Task.isCancelled {
+                image = full
+                isFullResolution = true
+            }
+            loading = false
+            if !isFullResolution { fullResolution = nil }  // try again on the next zoom
         }
     }
 }
@@ -78,16 +110,20 @@ private struct PhotoPage: View {
 /// Pinch to zoom, pan while zoomed and double-tap to zoom in or out, like Photos.
 private struct ZoomableImage: UIViewRepresentable {
     let image: UIImage
+    /// Called once the zoom goes past what a 1620 px preview can show sharply.
+    var onZoomIn: () -> Void
 
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
 
     func updateUIView(_ view: ZoomView, context: Context) {
+        view.onZoomIn = onZoomIn
         view.show(image)
     }
 }
 
 private final class ZoomView: UIScrollView, UIScrollViewDelegate {
     private let imageView = UIImageView()
+    var onZoomIn: (() -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -129,7 +165,10 @@ private final class ZoomView: UIScrollView, UIScrollViewDelegate {
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
 
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { center() }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        center()
+        if zoomScale > 1.3 { onZoomIn?() }
+    }
 
     /// Keeps the photo centred when it is smaller than the screen on either axis.
     private func center() {

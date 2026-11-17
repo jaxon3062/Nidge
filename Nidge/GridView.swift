@@ -89,15 +89,22 @@ struct GridView: View {
     private var optionsMenu: some View {
         @Bindable var model = model
         return Menu {
-            Picker("Format", selection: $model.format) {
-                ForEach(FormatChoice.allCases, id: \.self) { Text($0.rawValue) }
+            Section("Download options") {
+                Picker("Format", selection: $model.format) {
+                    ForEach(FormatChoice.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.menu)
+                Picker("JPEG / HEIF size", selection: $model.maxLongSide) {
+                    Text("Large (original)").tag(0)
+                    ForEach(ImageResizer.cameraSizes, id: \.longSide) { Text($0.name).tag($0.longSide) }
+                }
+                .pickerStyle(.menu)
             }
-            Picker("JPEG / HEIF size", selection: $model.maxLongSide) {
-                Text("Large (original)").tag(0)
-                ForEach(ImageResizer.cameraSizes, id: \.longSide) { Text($0.name).tag($0.longSide) }
-            }
-            Picker("Appearance", selection: $appearance) {
-                ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue) }
+            Section("Appearance") {
+                Picker("Theme", selection: $appearance) {
+                    ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.menu)
             }
         } label: {
             Label("Options", systemImage: "slider.horizontal.3")

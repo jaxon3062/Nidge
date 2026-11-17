@@ -46,6 +46,9 @@ final class AppModel {
     @ObservationIgnored private var wanted = 54
     @ObservationIgnored private var handleIndex: [UInt32: Int] = [:]
     static let lookahead = 36
+    /// JPEG/HEIF handles by their low 28 bits, to find a RAW file's twin for the viewer.
+    @ObservationIgnored private var companions: [UInt32: UInt32] = [:]
+    @ObservationIgnored private var twins: [String: PhotoItem] = [:]
     /// Set while the viewer is open: reading the listing waits so the photo on screen loads first.
     @ObservationIgnored var viewerOpen = false
 
@@ -107,9 +110,9 @@ final class AppModel {
         // The last card's details, so the grid appears at once and a reconnect only reads new shots.
         // shortcut: trusted while the handles match; a different card with identical handles would show stale entries until imported (imports re-check)
         items = (try? JSONDecoder().decode([PhotoItem].self, from: Data(contentsOf: Self.itemsURL))) ?? []
-        // Partial previews from older builds; previews are cheap to fetch again.
+        // Partial previews from older builds.
         for file in (try? FileManager.default.contentsOfDirectory(at: Self.previews, includingPropertiesForKeys: nil)) ?? []
-        where file.pathExtension == "part" {
+        where file.pathExtension == "part" && !file.lastPathComponent.contains("-full.") {
             try? FileManager.default.removeItem(at: file)
         }
     }
@@ -202,6 +205,10 @@ final class AppModel {
                 isLoadingLibrary = true
                 handles = try await camera.photoHandles(formats: format.codes)
                 handleIndex = Dictionary(handles.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+                if format != .processed {
+                    let processed = try await camera.photoHandles(formats: FormatChoice.processed.codes)
+                    companions = Dictionary(processed.map { ($0 & 0x0FFF_FFFF, $0) }, uniquingKeysWith: { a, _ in a })
+                }
                 // Drop photos no longer on the card; keep those of other formats for when they are switched back.
                 items.removeAll { handleIndex[$0.handle] == nil && format.includes($0) }
                 known = Set(items.map(\.handle))
@@ -298,12 +305,11 @@ final class AppModel {
                 guard let large = EmbeddedPreview.jpegRanges(header: header, fileSize: Int(item.size)).last else { return nil }
                 image = Self.oriented(try await camera.read(item.handle, offset: UInt32(large.lowerBound), length: UInt32(large.count)), like: header)
             } else {
-                let original = Self.previews.appendingPathComponent(item.key + "-" + item.filename)
-                defer {
-                    try? FileManager.default.removeItem(at: original)
-                    try? FileManager.default.removeItem(at: original.appendingPathExtension("part"))
+                // Kept: it is also the full-resolution image for zooming in.
+                let original = Self.fullFile(item)
+                if !FileManager.default.fileExists(atPath: original.path) {
+                    try await camera.download(item.handle, size: item.size, to: original)
                 }
-                try await camera.download(item.handle, size: item.size, to: original)
                 image = try await Task.detached {
                     let shrunk = try ImageResizer.resize(original, longSide: 2560)
                     defer { if shrunk != original { try? FileManager.default.removeItem(at: shrunk) } }
@@ -315,6 +321,48 @@ final class AppModel {
         } catch {
             return nil
         }
+    }
+
+    /// What the viewer shows for a photo: for a RAW file, its JPEG or HEIF twin when the card
+    /// has one (a fraction of the size, and decodable), else the photo itself.
+    func viewable(_ item: PhotoItem) async -> PhotoItem {
+        guard item.isRAW else { return item }
+        if let twin = twins[item.key] ?? items.first(where: { !$0.isRAW && $0.shot == item.shot }) {
+            twins[item.key] = twin
+            return twin
+        }
+        guard let camera, let handle = companions[item.handle & 0x0FFF_FFFF] else { return item }
+        visibleRequests += 1
+        defer { visibleRequests -= 1 }
+        guard let info = try? await camera.objectInfo(handle) else { return item }
+        let twin = PhotoItem(handle: handle, info: info)
+        // Shared low bits are only a pattern seen on the Z5II; trust it only when the names match.
+        guard twin.shot == item.shot else { return item }
+        twins[item.key] = twin
+        return twin
+    }
+
+    /// The full-resolution photo, for zooming in past the 1620 px preview. Downloads the
+    /// original once (about 10 MB for a JPEG, 2.7 MB for a HEIF). Not for RAW.
+    // shortcut: originals stay in Caches until iOS purges it; add a size cap if that becomes a problem
+    func original(for item: PhotoItem) async -> UIImage? {
+        guard !item.isRAW else { return nil }
+        let file = Self.fullFile(item)
+        if !FileManager.default.fileExists(atPath: file.path) {
+            guard let camera else { return nil }
+            visibleRequests += 1
+            defer { visibleRequests -= 1 }
+            do {
+                try await camera.download(item.handle, size: item.size, to: file)
+            } catch {
+                return nil  // the .part file lets the next zoom resume
+            }
+        }
+        return UIImage(contentsOfFile: file.path)
+    }
+
+    private static func fullFile(_ item: PhotoItem) -> URL {
+        previews.appendingPathComponent(item.key + "-full." + (item.isHEIF ? "heic" : "jpg"))
     }
 
     /// Decodes an embedded JPEG, taking the rotation from the main image when it has none of its own.
