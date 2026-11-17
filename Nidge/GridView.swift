@@ -28,27 +28,24 @@ struct GridView: View {
             .gesture(HorizontalPan(changed: dragChanged) { drag = nil })
         }
         .navigationTitle("Camera")
+        .navigationSubtitle(status)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if model.isLoadingLibrary || !model.isConnected {
+                ToolbarItem(placement: .topBarTrailing) { ProgressView() }
+            }
+        }
         .overlay { if model.items.isEmpty { emptyState } }
-        .safeAreaInset(edge: .top, spacing: 0) { statusBar }
         .safeAreaInset(edge: .bottom, spacing: 0) { importBar }
+        // Selection changes are instant; animating them was distracting.
+        .transaction { $0.animation = nil }
     }
 
     // MARK: Pieces
 
-    private var statusBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: model.isConnected ? "wifi" : "wifi.slash")
-            Text(model.isConnected
-                 ? (model.isLoadingLibrary ? "Reading the card… \(model.items.count) photos" : "Connected · \(model.items.count) photos")
-                 : "Looking for the camera…")
-            Spacer()
-            if model.isLoadingLibrary || !model.isConnected { ProgressView() }
-        }
-        .font(.footnote)
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(.bar)
-        .accessibilityElement(children: .combine)
+    private var status: String {
+        guard model.isConnected else { return "Looking for the camera…" }
+        return model.isLoadingLibrary ? "Reading the card… \(model.items.count) photos" : "Connected · \(model.items.count) photos"
     }
 
     @ViewBuilder private var emptyState: some View {
@@ -67,18 +64,29 @@ struct GridView: View {
         let allSelected = items.allSatisfy { model.selection.contains($0.key) || !selectable($0) }
         return HStack {
             Text(Self.title(for: day)).font(.subheadline.bold())
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .glassEffect()
             Spacer()
             Button(allSelected ? "Deselect" : "Select day") {
                 let keys = items.filter(selectable).map(\.key)
                 if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
             }
             .font(.subheadline)
+            .buttonStyle(.glass)
         }
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(.bar)
+        .padding(.horizontal, 12).padding(.vertical, 6)
     }
 
     @ViewBuilder private var importBar: some View {
+        if model.isImporting || !model.selection.isEmpty || !model.failures.isEmpty {
+            importBarContent
+                .padding(16)
+                .glassEffect(.regular, in: .rect(cornerRadius: 28))
+                .padding(.horizontal, 12).padding(.bottom, 8)
+        }
+    }
+
+    private var importBarContent: some View {
         VStack(spacing: 8) {
             if !model.failures.isEmpty {
                 VStack(alignment: .leading) {
@@ -99,7 +107,7 @@ struct GridView: View {
                         ProgressView(value: (Double(model.batchDone) + model.currentFraction) / Double(max(model.batchTotal, 1)))
                     }
                     Button("Cancel", role: .cancel) { model.cancelImport() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                 }
             } else if !model.selection.isEmpty {
                 Button {
@@ -107,12 +115,10 @@ struct GridView: View {
                 } label: {
                     Text("Import ^[\(model.selection.count) photo](inflect: true)").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
             }
         }
-        .padding(model.isImporting || !model.selection.isEmpty || !model.failures.isEmpty ? 12 : 0)
-        .background(.bar)
     }
 
     // MARK: Selection

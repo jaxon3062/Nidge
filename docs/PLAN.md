@@ -165,6 +165,22 @@ App Store review notes, wider camera testing through volunteers.
 
 ## 6. Open decisions for the owner
 
+Requests from the owner after first using the M2 build (2026-11-17), not yet
+scheduled or designed:
+
+- **Camera page.** A main page listing cameras: remember ones used before,
+  pick one to connect, and ideally find new ones without a trip to Wi-Fi
+  settings. iOS apps cannot scan for Wi-Fi networks, and joining one from code
+  needs `NEHotspotConfiguration` (paid account), so discovery has to come from
+  Bluetooth. Do this with M4.
+- **Download size and format.** Choose a smaller size instead of the
+  original, and RAW when a shot has both. This changes section 1 (originals
+  only, NEF hidden). The camera advertises GetLargeThumb (0x90C4) and
+  GetFhdPicture (0x920F) but neither is tested, so the sizes it can produce
+  are unknown; other sizes would mean downloading the original and shrinking
+  it on the phone. Whether Photos accepts Z5II NEF files is untested.
+
+
 - Licence (MIT recommended).
 - Whether imported photos go into a dedicated "Nidge" album as well as the
   library.

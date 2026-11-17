@@ -29,7 +29,7 @@ struct OnboardingView: View {
                 } label: {
                     Text("Allow Photos access").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 if photosDenied {
                     Button("Continue without Photos access", action: done)
