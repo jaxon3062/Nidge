@@ -17,6 +17,8 @@ public enum PTPResponse {
 }
 
 public enum PTPObjectFormat {
+    /// What the Z5II reports for `.NEF` files.
+    public static let undefined: UInt16 = 0x3000
     public static let association: UInt16 = 0x3001
     public static let jpeg: UInt16 = 0x3801
     /// What the Z5II reports for `.HIF` files. Not a standard PTP code.

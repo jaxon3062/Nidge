@@ -10,7 +10,7 @@ struct GridView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2, pinnedViews: .sectionHeaders) {
-                ForEach(groupByDay(model.items), id: \.day) { group in
+                ForEach(groupByDay(model.visibleItems), id: \.day) { group in
                     Section {
                         ForEach(group.items) { item in
                             PhotoCell(item: item)
@@ -31,11 +31,12 @@ struct GridView: View {
         .navigationSubtitle(status)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { optionsMenu }
             if model.isLoadingLibrary || !model.isConnected {
                 ToolbarItem(placement: .topBarTrailing) { ProgressView() }
             }
         }
-        .overlay { if model.items.isEmpty { emptyState } }
+        .overlay { if model.visibleItems.isEmpty { emptyState } }
         .safeAreaInset(edge: .bottom, spacing: 0) { importBar }
         // Selection changes are instant; animating them was distracting.
         .transaction { $0.animation = nil }
@@ -45,14 +46,30 @@ struct GridView: View {
 
     private var status: String {
         guard model.isConnected else { return "Looking for the camera…" }
-        return model.isLoadingLibrary ? "Reading the card… \(model.items.count) photos" : "Connected · \(model.items.count) photos"
+        let count = model.visibleItems.count
+        return model.isLoadingLibrary ? "Reading the card… \(count) photos" : "Connected · \(count) photos"
+    }
+
+    private var optionsMenu: some View {
+        @Bindable var model = model
+        return Menu {
+            Picker("Format", selection: $model.format) {
+                ForEach(FormatChoice.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            Picker("JPEG / HEIF size", selection: $model.maxLongSide) {
+                Text("Large (original)").tag(0)
+                ForEach(ImageResizer.cameraSizes, id: \.longSide) { Text($0.name).tag($0.longSide) }
+            }
+        } label: {
+            Label("Import options", systemImage: "slider.horizontal.3")
+        }
     }
 
     @ViewBuilder private var emptyState: some View {
         if model.isConnected {
             if !model.isLoadingLibrary {
                 ContentUnavailableView("No photos", systemImage: "photo.on.rectangle",
-                                       description: Text("The card has no JPEG or HEIF photos."))
+                                       description: Text(model.format == .raw ? "The card has no RAW photos." : "The card has no JPEG or HEIF photos."))
             }
         } else {
             ContentUnavailableView("Camera not found", systemImage: "camera",
@@ -67,9 +84,12 @@ struct GridView: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .glassEffect()
             Spacer()
-            Button(allSelected ? "Deselect" : "Select day") {
+            Button {
                 let keys = items.filter(selectable).map(\.key)
                 if allSelected { model.selection.subtract(keys) } else { model.selection.formUnion(keys) }
+            } label: {
+                // Sized for the longer label so the button does not change width.
+                Text("Select day").hidden().overlay { Text(allSelected ? "Deselect" : "Select day") }
             }
             .font(.subheadline)
             .buttonStyle(.glass)
@@ -135,11 +155,12 @@ struct GridView: View {
     /// Sweeping sideways selects (or deselects, if it started on a selected photo) everything
     /// between the first photo touched and the one under the finger.
     private func dragChanged(_ location: CGPoint) {
+        let items = model.visibleItems
         guard let key = frames.rects.first(where: { $0.value.contains(location) })?.key,
-              let index = model.items.firstIndex(where: { $0.key == key }) else { return }
+              let index = items.firstIndex(where: { $0.key == key }) else { return }
         if drag == nil { drag = (index, !model.selection.contains(key), model.selection) }
         guard let drag else { return }
-        let swept = model.items[min(drag.anchor, index)...max(drag.anchor, index)].filter(selectable).map(\.key)
+        let swept = items[min(drag.anchor, index)...max(drag.anchor, index)].filter(selectable).map(\.key)
         model.selection = drag.select ? drag.base.union(swept) : drag.base.subtracting(swept)
     }
 
@@ -177,6 +198,12 @@ private struct PhotoCell: View {
                     badge("checkmark.circle.fill", .white, .green)
                 } else if queued {
                     badge("arrow.down.circle.fill", .white, .orange)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if item.isRAW {
+                    Text("RAW").font(.caption2.bold()).padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.black.opacity(0.6), in: .capsule).foregroundStyle(.white).padding(4)
                 }
             }
             .overlay { if selected { Rectangle().strokeBorder(Color.accentColor, lineWidth: 3) } }

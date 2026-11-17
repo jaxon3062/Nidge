@@ -1,6 +1,13 @@
 import NidgeKit
 import Observation
 import UIKit
+import UniformTypeIdentifiers
+
+enum FormatChoice: String, CaseIterable {
+    case processed = "JPEG / HEIF only"
+    case raw = "RAW only"
+    case both = "RAW + JPEG / HEIF"
+}
 
 /// Connection, card contents and the import queue. One camera session is kept open while the
 /// app is in the foreground: the camera was seen to drop its Wi-Fi after sessions were closed.
@@ -9,8 +16,32 @@ import UIKit
 final class AppModel {
     private(set) var isConnected = false
     private(set) var isLoadingLibrary = false
-    /// Newest first.
+    /// Everything loaded from the card, newest first. NEF files are only loaded when asked for.
     private(set) var items: [PhotoItem] = []
+    private var loadedRAW = false
+
+    var format = FormatChoice(rawValue: UserDefaults.standard.string(forKey: "format") ?? "") ?? .processed {
+        didSet {
+            UserDefaults.standard.set(format.rawValue, forKey: "format")
+            selection = []
+        }
+    }
+    /// Long side in pixels that JPEG and HEIF imports are shrunk to; 0 keeps the original. RAW is never resized.
+    var maxLongSide = UserDefaults.standard.integer(forKey: "maxLongSide") {
+        didSet { UserDefaults.standard.set(maxLongSide, forKey: "maxLongSide") }
+    }
+
+    /// What the grid shows. With RAW + JPEG a shot appears once, as its JPEG or HEIF; its NEF
+    /// is imported along with it. A shot that only has a NEF shows the NEF.
+    var visibleItems: [PhotoItem] {
+        switch format {
+        case .processed: return items.filter { !$0.isRAW }
+        case .raw: return items.filter(\.isRAW)
+        case .both:
+            let processed = Set(items.lazy.filter { !$0.isRAW }.map(\.shot))
+            return items.filter { !$0.isRAW || !processed.contains($0.shot) }
+        }
+    }
     var selection: Set<String> = []
     private(set) var ledger: ImportLedger
     /// Size of the batch being imported; 0 when idle.
@@ -83,6 +114,8 @@ final class AppModel {
                 if let next = ledger.pending.first {
                     try await importItem(next, from: camera)
                     idleSeconds = 0
+                } else if format != .processed, !loadedRAW {
+                    try await loadLibrary(camera)  // RAW was switched on after the card was read
                 } else {
                     batchTotal = 0
                     updateIdleTimer()
@@ -100,17 +133,22 @@ final class AppModel {
     private func loadLibrary(_ camera: Camera) async throws {
         isLoadingLibrary = true
         defer { isLoadingLibrary = false }
-        let handles = try await camera.photoHandles()
+        let includeRAW = format != .processed
+        let handles = try await camera.photoHandles(includeRAW: includeRAW)
         // After a reconnect only new shots need their details fetched.
         let present = Set(handles)
         items.removeAll { !present.contains($0.handle) }
         let known = Set(items.map(\.handle))
         var fresh: [PhotoItem] = []
         for handle in handles where !known.contains(handle) {
-            fresh.append(PhotoItem(handle: handle, info: try await camera.objectInfo(handle)))
+            let info = try await camera.objectInfo(handle)
+            let item = PhotoItem(handle: handle, info: info)
+            // The "undefined" format can hold things other than NEF; skip those.
+            if info.format != PTPObjectFormat.undefined || item.isRAW { fresh.append(item) }
             if fresh.count == 24 { merge(&fresh) }  // show progress while a full card loads
         }
         merge(&fresh)
+        loadedRAW = includeRAW
     }
 
     private func merge(_ fresh: inout [PhotoItem]) {
@@ -135,7 +173,13 @@ final class AppModel {
 
     func importSelection() {
         let alreadyRunning = isImporting
-        let added = ledger.enqueue(items.filter { selection.contains($0.key) })
+        var chosen = visibleItems.filter { selection.contains($0.key) }
+        if format == .both {
+            // Each selected shot brings its NEF along as a separate photo.
+            let shots = Set(chosen.map(\.shot))
+            chosen += items.filter { $0.isRAW && shots.contains($0.shot) && !selection.contains($0.key) }
+        }
+        let added = ledger.enqueue(chosen)
         batchTotal = (alreadyRunning ? batchTotal : 0) + added
         selection = []
         failures = [:]
@@ -172,7 +216,19 @@ final class AppModel {
                 Task { @MainActor in self.currentFraction = Double(bytes) / Double(max(item.size, 1)) }
             }
             do {
-                try await PhotosWriter.save(file, filename: item.filename, isHEIF: item.isHEIF)
+                // shortcut: uses the size chosen when the file arrives, not when it was queued; store it per item if that matters
+                let limit = maxLongSide
+                if limit > 0, !item.isRAW {
+                    let resized = try await Task.detached { try ImageResizer.resize(file, longSide: limit) }.value
+                    if resized != file {
+                        let name = (item.filename as NSString).deletingPathExtension + "." + (item.isHEIF ? "HEIC" : "JPG")
+                        return try await PhotosWriter.save(resized, filename: name)
+                    }
+                }
+                // Photos does not know the camera's .HIF extension.
+                try await PhotosWriter.save(file, filename: item.filename, type: item.isHEIF ? .heif : nil)
+            } catch is ImageResizer.Failure {
+                throw ImportError.photos("The photo could not be resized.")
             } catch {
                 throw ImportError.photos(error.localizedDescription)
             }

@@ -50,6 +50,12 @@ import NidgeMock
         let camera = try await Camera.connect(host: "127.0.0.1", port: port, guid: Data(0..<16), name: "test", attempts: 1)
         let handles = try await camera.photoHandles()
         #expect(handles == [0x102, 0x100])
+        let withRAW = try await camera.photoHandles(includeRAW: true)
+        #expect(withRAW == [0x102, 0x101, 0x100])
+        let raw = PhotoItem(handle: 0x101, info: try await camera.objectInfo(0x101))
+        let jpeg = PhotoItem(handle: 0x100, info: try await camera.objectInfo(0x100))
+        #expect(raw.isRAW && !jpeg.isRAW)
+        #expect(raw.shot == jpeg.shot)  // DSC_0001.NEF and DSC_0001.JPG in the same folder
         var names: [String] = []
         for handle in handles { names.append(PhotoItem(handle: handle, info: try await camera.objectInfo(handle)).filename) }
         #expect(names == ["DSC_0002.HIF", "DSC_0001.JPG"])
@@ -87,5 +93,62 @@ import NidgeMock
         #expect(try await big.count == 1 << 20)
         #expect(try await camera.objectInfo(0x100).filename == "DSC_0001.JPG")
         await camera.close()
+    }
+}
+
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+
+@Suite struct ImageResizerTests {
+    /// A 3000x2000 JPEG stored sideways (orientation 6) with a capture date.
+    static func makeJPEG() throws -> URL {
+        let context = CGContext(data: nil, width: 3000, height: 2000, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        context.setFillColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("resize-\(UUID().uuidString).jpg")
+        let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+        let properties: [CFString: Any] = [
+            kCGImagePropertyOrientation: 6,
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifDateTimeOriginal: "2026:11:12 16:33:59"],
+            kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFModel: "TEST CAMERA"],
+        ]
+        CGImageDestinationAddImage(destination, context.makeImage()!, properties as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    static func properties(_ url: URL) -> [CFString: Any] {
+        CGImageSourceCopyPropertiesAtIndex(CGImageSourceCreateWithURL(url as CFURL, nil)!, 0, nil) as! [CFString: Any]
+    }
+
+    @Test func shrinksToTargetKeepingMetadataAndUprightPixels() throws {
+        let original = try Self.makeJPEG()
+        let resized = try ImageResizer.resize(original, longSide: 1500)
+        defer { try? FileManager.default.removeItem(at: original); try? FileManager.default.removeItem(at: resized) }
+        #expect(resized != original)
+        let properties = Self.properties(resized)
+        let width = properties[kCGImagePropertyPixelWidth] as! Int, height = properties[kCGImagePropertyPixelHeight] as! Int
+        // Rotated upright: now portrait, 2:3, long side as asked.
+        #expect(width == 1000)
+        #expect(height == 1500)
+        #expect((properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1)
+        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        #expect(exif?[kCGImagePropertyExifDateTimeOriginal] as? String == "2026:11:12 16:33:59")
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        #expect(tiff?[kCGImagePropertyTIFFModel] as? String == "TEST CAMERA")
+    }
+
+    @Test func leavesSmallImagesAndRejectsNonImages() throws {
+        let original = try Self.makeJPEG()  // 3000x2000
+        defer { try? FileManager.default.removeItem(at: original) }
+        #expect(try ImageResizer.resize(original, longSide: 4528) == original)
+        #expect(try ImageResizer.resize(original, longSide: 3000) == original)
+        let junk = FileManager.default.temporaryDirectory.appendingPathComponent("junk-\(UUID().uuidString).jpg")
+        try Data("not an image".utf8).write(to: junk)
+        defer { try? FileManager.default.removeItem(at: junk) }
+        #expect(throws: ImageResizer.Failure.self) { try ImageResizer.resize(junk, longSide: 3024) }
     }
 }

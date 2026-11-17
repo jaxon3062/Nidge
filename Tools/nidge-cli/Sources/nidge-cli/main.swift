@@ -14,6 +14,7 @@ Commands joined with "+" share one session, which the camera seems to prefer.
   thumb <handle|name> [dir]    save the camera's thumbnail
   get <handle|name> [dir]      download, resuming <file>.part; reconnects if cut
   hold <seconds>               keep the session open, poll every 5 s
+  resize <file> <long-side-px> write a smaller copy next to the file, as the app does
   mock <dir> [port]            serve the files in <dir> as a fake camera on localhost;
                                <file>.thumb.jpg, if present, is that file's thumbnail
 """
@@ -156,6 +157,10 @@ final class Runner {
                 }
             }
             print("held the session for \(Int(seconds)) s")
+
+        case "resize":
+            guard rest.count == 2, let longSide = Int(rest[1]) else { throw Failure(usage) }
+            print(try ImageResizer.resize(URL(fileURLWithPath: rest[0]), longSide: longSide).path)
 
         case "mock":
             guard let directory = rest.first else { throw Failure(usage) }

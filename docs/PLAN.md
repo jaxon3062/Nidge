@@ -11,9 +11,10 @@ card, pick shots, download them to Apple Photos. No camera control.
 | Scope | Photo download only. No remote shutter, live view, GPS sync, firmware, cloud. |
 | Camera | Nikon Z5II (only body available for testing). |
 | Phone | iPhone 13 Pro (Lightning), iOS 26. The app requires iOS 26. |
-| File types | JPEG and HEIF originals. NEF and video are hidden, not downloaded. |
+| File types | JPEG, HEIF and NEF. The user picks JPEG/HEIF only (default), RAW only, or both; with both, the two files of a shot are imported as separate photos. Video is hidden. (Changed by the owner 2026-11-17; was JPEG/HEIF only.) |
+| Size | The camera's own image sizes: Large (original), Medium (4528x3024) or Small (3024x2016). Medium and Small are made on the phone after the original is downloaded. RAW is never resized. (Added by the owner 2026-11-17.) |
 | Selection | Browse a thumbnail grid and pick. No "import all", no auto-transfer while shooting. |
-| Destination | Apple Photos library, original files with metadata intact. |
+| Destination | Apple Photos library; original files unless a smaller size is chosen, metadata intact either way. |
 | Connection | Automatic, like SnapBridge: pair once, then the app brings up the camera's Wi-Fi itself. |
 | Background | Downloads must continue after the user leaves the app. This is the top pain point. |
 | Other pain points | Slow/fiddly connecting, clunky browsing and selecting, slow or failing transfers. |
@@ -131,6 +132,12 @@ copy, and resumes after the connection is cut mid-file.
 Gate: 100 selected photos import correctly with the app in the foreground,
 including one forced Wi-Fi drop mid-import.
 
+Status 2026-11-17: on the iPhone 13 Pro and the Z5II the owner imported one
+JPEG and one HEIF, cut the connection mid-download and saw it resume, and
+checked selection and the imported badge across a relaunch. **The owner
+postponed the 100-photo run to the final stage** (it takes about 20 minutes at
+current speeds), so this gate is not passed, only deferred by decision.
+
 ### M3. Background downloads
 
 - Start imports as an iOS 26 continued-processing task
@@ -173,13 +180,6 @@ scheduled or designed:
   settings. iOS apps cannot scan for Wi-Fi networks, and joining one from code
   needs `NEHotspotConfiguration` (paid account), so discovery has to come from
   Bluetooth. Do this with M4.
-- **Download size and format.** Choose a smaller size instead of the
-  original, and RAW when a shot has both. This changes section 1 (originals
-  only, NEF hidden). The camera advertises GetLargeThumb (0x90C4) and
-  GetFhdPicture (0x920F) but neither is tested, so the sizes it can produce
-  are unknown; other sizes would mean downloading the original and shrinking
-  it on the phone. Whether Photos accepts Z5II NEF files is untested.
-
 
 - Licence (MIT recommended).
 - Whether imported photos go into a dedicated "Nidge" album as well as the

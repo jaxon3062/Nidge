@@ -1,6 +1,6 @@
 import Foundation
 
-/// One downloadable photo (JPEG or HEIF) on the card.
+/// One downloadable photo (JPEG, HEIF or NEF) on the card.
 public struct PhotoItem: Identifiable, Hashable, Codable, Sendable {
     public var handle: UInt32
     public var filename: String
@@ -8,6 +8,10 @@ public struct PhotoItem: Identifiable, Hashable, Codable, Sendable {
     /// Camera-local time as `YYYYMMDDThhmmss`.
     public var captureDate: String
     public var isHEIF: Bool
+    /// The Z5II reports NEF as format 0x3000 ("undefined"), so the extension decides.
+    public var isRAW: Bool
+    /// Handle of the folder the file is in.
+    public var folder: UInt32
 
     public init(handle: UInt32, info: ObjectInfo) {
         self.handle = handle
@@ -15,7 +19,12 @@ public struct PhotoItem: Identifiable, Hashable, Codable, Sendable {
         size = info.size
         captureDate = info.captureDate
         isHEIF = info.format == PTPObjectFormat.nikonHEIF
+        isRAW = info.format == PTPObjectFormat.undefined && info.filename.uppercased().hasSuffix(".NEF")
+        folder = info.parent
     }
+
+    /// Same for the JPEG/HEIF and the NEF of one shot: folder plus file name without extension.
+    public var shot: String { "\(folder)/\((filename as NSString).deletingPathExtension)" }
 
     /// Identifies the same shot across sessions and cards; handles are not assumed stable.
     /// Also the thumbnail cache key.
@@ -76,13 +85,14 @@ public struct ImportLedger: Codable, Equatable, Sendable {
 
 extension Camera {
     /// Handles of every JPEG and HEIF on every card, using the format filter the Z5II honours
-    /// (one call per format per card, no NEF or video). The order is only a fetch-order hint,
-    /// newest first on the Z5II; sort by capture date for display.
-    public func photoHandles() async throws -> [UInt32] {
+    /// (one call per format per card, no video). `includeRAW` adds the "undefined" format,
+    /// which is where NEF files are. The order is only a fetch-order hint, newest first on the
+    /// Z5II; sort by capture date for display.
+    public func photoHandles(includeRAW: Bool = false) async throws -> [UInt32] {
         var handles: [UInt32] = []
         // A storage ID whose low 16 bits are zero has no card (seen for the empty slot 2).
         for storage in try await storageIDs() where storage & 0xFFFF != 0 {
-            for format in [PTPObjectFormat.jpeg, PTPObjectFormat.nikonHEIF] {
+            for format in [PTPObjectFormat.jpeg, PTPObjectFormat.nikonHEIF] + (includeRAW ? [PTPObjectFormat.undefined] : []) {
                 handles += try await objectHandles(storage: storage, format: format, parent: 0)
             }
         }
